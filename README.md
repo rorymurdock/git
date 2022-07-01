@@ -1,5 +1,7 @@
 # Git
 
+[![macOS 11 build Git](https://github.com/rorymurdock/git/actions/workflows/auto_build.yml/badge.svg)](https://github.com/rorymurdock/git/actions/workflows/auto_build.yml)
+
 This build repo was created to incorporate improvements by [@dscho](https://github.com/dscho) to [Tim Harper's repo](https://github.com/timcharper/git_osx_installer/issues). The aim is to automate the building of Git for macOS into a pipeline and help provide the Mac community with updated binary releases for autopkg.
 
 ## Building
