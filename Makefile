@@ -4,7 +4,7 @@ C_INCLUDE_PATH := /usr/include
 CPLUS_INCLUDE_PATH := /usr/include
 LD_LIBRARY_PATH := /usr/lib
 
-OSX_VERSION := 10.6
+OSX_VERSION := 11.0
 SDK_PATH := $(shell bin/find-dir  $(PWD)/MacOSX10.9.sdk /Developer/SDKs/MacOSX$(OSX_VERSION).sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX$(OSX_VERSION).sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform)
 TARGET_FLAGS := -mmacosx-version-min=$(OSX_VERSION) -isysroot $(SDK_PATH) -DMACOSX_DEPLOYMENT_TARGET=$(OSX_VERSION)
 
@@ -25,6 +25,9 @@ OSX_NAME := Yosemite
 endif
 ifeq ("$(OSX_VERSION)", "10.11")
 OSX_NAME := El Capitan
+endif
+ifeq ("$(OSX_VERSION)", "11.0")
+OSX_NAME := Big Sur
 endif
 
 OSX_CODE := $(shell echo "$(OSX_NAME)" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
@@ -172,7 +175,7 @@ disk-image/git-$(VERSION)-$(BUILD_CODE).pkg: disk-image/VERSION-$(VERSION)-$(ARC
 
 git-%-$(BUILD_CODE).dmg: disk-image/git-%-$(BUILD_CODE).pkg
 	rm -f git-$(VERSION)-$(BUILD_CODE)*.dmg
-	hdiutil create git-$(VERSION)-$(BUILD_CODE).uncompressed.dmg -fs HFS+ -srcfolder disk-image -volname "Git $(VERSION) $(OSX_NAME) Intel $(ARCH)" -ov
+	hdiutil create git-$(VERSION)-$(BUILD_CODE).uncompressed.dmg -fs HFS+ -srcfolder disk-image -volname "Git $(VERSION)" -ov
 	hdiutil convert -format UDZO -o $@ git-$(VERSION)-$(BUILD_CODE).uncompressed.dmg
 	rm -f git-$(VERSION)-$(BUILD_CODE).uncompressed.dmg
 

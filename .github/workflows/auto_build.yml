@@ -1,0 +1,162 @@
+# This is triggered by git_tag_monitor.yml
+# Based off the work by https://github.com/dscho
+# https://github.com/timcharper/git_osx_installer/pull/156/files
+
+name: macOS 11 build Git
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git release tag'     
+        required: true
+      prerelease:
+        description: 'Is this a pre-release build?'
+        required: true
+        type: boolean
+
+env:
+  GIT_REPOSITORY: "${{github.event.client_payload.repository}}"
+  GIT_REF: "${{github.event.client_payload.ref}}"
+  FALLBACK_GIT_REPOSITORY: https://github.com/git/git
+
+  LDFLAGS: -L/usr/local/opt/gettext/lib
+  CFLAGS: -I/usr/local/opt/gettext/include
+  CURL_LDFLAGS: -lcurl
+  XML_CATALOG_FILES: /usr/local/etc/xml/catalog
+  DEVELOPER: 1
+  OSX_VERSION: 11.0
+  V: 1
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Install the Apple certificate and provisioning profile
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          INSTALL_CERTIFICATE_BASE64: ${{ secrets.INSTALL_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -ex
+          # Create a keychain containing the code sign certificate
+          APPLICATION_CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          INSTALLATION_CERTIFICATE_PATH=$RUNNER_TEMP/install_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          # Import certificate and provisioning profile from secrets
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output $APPLICATION_CERTIFICATE_PATH
+          echo -n "$INSTALL_CERTIFICATE_BASE64" | base64 --decode --output $INSTALLATION_CERTIFICATE_PATH
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          # Import certificate to keychain
+          security import $APPLICATION_CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security import $INSTALLATION_CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          security -v find-identity
+      - uses: actions/checkout@v1
+      - name: Clone git repo
+        run: |
+          git clone -n "${GIT_REPOSITORY:-$FALLBACK_GIT_REPOSITORY}" git &&
+          cd git &&
+          git checkout ${{ github.event.inputs.tag }} &&
+          if test -z "$GIT_REF"
+          then
+            GIT_REF="refs/tags/${{ github.event.inputs.tag }}" &&
+            test -n "$GIT_REF" ||
+            { echo "No eligible tag found" >&2; exit 1; }
+          fi &&
+          git fetch origin "$GIT_REF" &&
+          git switch --detach FETCH_HEAD
+      - name: Install Make's dependencies
+        run: |
+          brew install autoconf automake asciidoc docbook xmlto
+          brew link --force gettext
+      - name: Compile Git
+        run: |
+          set -x
+          PATH=/usr/local/bin:$PATH \
+          make -C git -j$(sysctl -n hw.physicalcpu) GIT-VERSION-FILE dist dist-doc
+      - name: Create DMG
+        run: |
+          die () {
+            echo "$*" >&2
+            exit 1
+          }
+          VERSION="`sed -n 's/^GIT_VERSION = //p' <git/GIT-VERSION-FILE`"
+          test -n "$VERSION" ||
+          die "Could not determine version!"
+          export VERSION
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          ln -s git git-$VERSION
+          mkdir -p build &&
+          cp git/git-$VERSION.tar.gz git/git-manpages-$VERSION.tar.gz build/ ||
+          die "Could not copy .tar.gz files"
+          # drop the -isysroot `GIT_SDK` hack
+          sed -i .bak -e 's/ -isysroot .(SDK_PATH)//' Makefile ||
+          die "Could not drop the -isysroot hack"
+          # make sure that .../usr/local/git/share/man/ exists
+          sed -i .bak -e 's/\(tar .*-C \)\(.*\/share\/man\)$/mkdir -p \2 \&\& &/' Makefile ||
+          die "Could not edit Makefile"
+          PATH=/usr/local/bin:/System/Library/Frameworks:$PATH \
+          make build/intel-universal-big-sur/git-$VERSION/osx-built-keychain ||
+          die "Build failed"
+          PATH=/usr/local/bin:$PATH \
+          make image ||
+          die "Build failed"
+          mkdir osx-installer &&
+          mv *.dmg disk-image/*.pkg osx-installer/
+      - name: Notarize, sign, and rename assets
+        env:
+          APPLICATION_CERTIFICATE_NAME: ${{ secrets.APPLICATION_CERTIFICATE_NAME }}
+          INSTALLER_CERTIFICATE_NAME: ${{ secrets.INSTALLER_CERTIFICATE_NAME }}
+          DEVELOPER_EMAIL: ${{ secrets.DEVELOPER_EMAIL }}
+          DEVELOPER_TEAM: ${{ secrets.DEVELOPER_TEAM }}
+          DEVELOPER_PASSWORD: ${{ secrets.DEVELOPER_PASSWORD }}
+        run: |
+          cd ./osx-installer
+          zsh ../sign_pkg.zsh
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v1
+        with:
+          name: Git ${{github.event.inputs.tag}}
+          path: osx-installer
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        with:
+          tag_name: ${{github.event.inputs.tag}}
+          release_name: Git ${{github.event.inputs.tag}}
+          body: |
+              # Notes
+              This is a version of Git created by GitHub Actions.
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+      - name: Upload Package Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./osx-installer/git-${{env.VERSION}}.pkg
+          asset_name: git-${{env.VERSION}}.pkg
+          asset_content_type: application/x-newton-compatible-pkg
+      - name: Upload DMG Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./osx-installer/git-${{env.VERSION}}.dmg
+          asset_name: git-${{env.VERSION}}.dmg
+          asset_content_type: application/x-apple-diskimage
+      - name: Clean up keychain and provisioning profile
+        if: ${{ always() }}
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db

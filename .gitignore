@@ -8,3 +8,7 @@ tmp/
 build
 MacOSX10.*
 stage/
+.vscode/
+pkg_extract/
+cert.p12
+Archive.zip
